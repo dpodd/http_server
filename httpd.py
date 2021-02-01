@@ -1,79 +1,143 @@
 import socket
 import os
+import errno
 from optparse import OptionParser
-from icecream import ic
+from urllib.parse import unquote
+from icecream import ic # TODO remove
+from wsgiref.handlers import format_date_time
+from datetime import datetime
+from time import mktime
 from concurrent.futures import ThreadPoolExecutor
 import logging
+from htmlgen import create_index_page_if_not_exist
 
 CRLFx2 = b'\r\n\r\n'
 MAX_MSG_LEN = 2048
 MSG_LEN = 1024
+TIMEOUT = 10
 OK = 200
 Forbidden = 403
 NotFound = 404
 NotAllowed = 405
+InternalServerError = 500
 phrases = {
     OK: 'OK',
     Forbidden: 'Forbidden',
     NotFound: 'Not Found',
     NotAllowed: 'Not Allowed',
+    InternalServerError: "Internal Server Error"
 }
+SERVER_NAME = 'Server-X'
 
 
 class RequestHandler:
+    content_types = {
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "gif": "image/gif",
+        "css": "text/css",
+        "html": "text/html",
+        "js": "application/javascript",
+        "swf": "application/x-shockwave-flash",
+    }
+
     @classmethod
     def get_response(cls, request, _dir):
         response = cls(request, _dir)
-        resp = response.process_request()
-        return resp
+        response_binary = response.process_request()
+        return response_binary
 
     def __init__(self, request, _dir):
         self.request = request
         self.dir = _dir
         self.content = None
+        self.code = None
+        self.content_length = None
+        self.content_type = None
+        self.headers = {}
 
     def process_request(self):
-        path_to_file = self.get_path(self.request.path)
+        path_to_file = unquote(self.get_path(self.request.path))
         if self.request.method == 'GET':
-            self.content, code = self.get_content(path_to_file)
-            response = self.build_response(code)
+            create_index_page_if_not_exist(path_to_file)
+            self.content, self.code, self.content_length = self.get_content(path_to_file, open_file=True)
+            response = self.build_response()
         elif self.request.method == 'HEAD':
-            self.content = b''
-            response = self.build_response(OK)
+            self.content, self.code, self.content_length = self.get_content(path_to_file, open_file=False)
+            response = self.build_response()
         else:
             self.content = b''
-            response = self.build_response(NotAllowed)
-
+            self.code = NotAllowed
+            response = self.build_response()
         return response
 
     def get_path(self, path):
-        if path == '/':
-            return os.path.join(os.path.abspath('.'), self.dir, 'index.html')
-        return os.path.join(os.path.abspath('.'), self.dir, path)
+        if path.startswith('/'):
+            path = path[1:]
+        path_to_resource = os.path.join(os.path.abspath('.'), self.dir, path)
+        if os.path.isdir(path_to_resource):
+            return os.path.join(path_to_resource, 'index.html')
+        return os.path.join(path_to_resource)
 
-    @staticmethod
-    def get_content(path_to_file):
+    def get_content(self, path_to_file, open_file=False):
         try:
             with open(path_to_file, 'rb') as file:
-                content = file.read()
-                return content, OK
-        except Exception as e: # TODO add exceptions to 403, 404 error
-            ic("Error: ", e)
-            return b'', NotFound
+                if open_file:
+                    content = file.read()
+                    content_length = len(content)
+                    self.set_content_type(path_to_file)
+                else:
+                    line = file.readline()
+                    content = b''
+                    content_length = os.path.getsize(path_to_file)
+                    self.set_content_type(path_to_file)
+                return content, OK, content_length
+        except IOError as e:
+            if e.errno == errno.ENOENT:
+                return b'', NotFound, None
+            elif e.errno == errno.EACCES:
+                return b'', Forbidden, None
+        except Exception as e:
+            logging.error(e)
+            return b'', InternalServerError, None
+
+    def set_content_type(self, path_to_file):
+        _, ext = os.path.splitext(path_to_file)
+        ext = ext[1:]  # remove dot
+        if ext in self.content_types.keys():
+            self.content_type = self.content_types.get(ext)
 
     def set_headers(self):
+        now = datetime.now()
+        stamp = mktime(now.timetuple())
 
+        self.headers.update({
+            'Date': format_date_time(stamp),
+            'Server': SERVER_NAME,
+            'Connection': 'closed'  # short-lived connections server
+        })
 
-    def build_response(self, code):
-        status_line = f"HTTP/1.0 {code} {phrases[code]}"
+        if self.request.method in ['GET', 'HEAD']:
+            if self.content_length:
+                self.headers.update({'Content-Length': self.content_length})
+
+            if self.content_type:
+                self.headers.update({'Content-Type': self.content_type})
+
+    def build_response(self):
+        self.set_headers()
+        status_line = f"HTTP/1.1 {self.code} {phrases[self.code]}"
         status_line = status_line.encode() + b'\r\n'
-        content_length_header = 'Content-Length: ' + '%s' % len(self.content)
-        content_length_header = content_length_header.encode()
 
-        return status_line + content_length_header + CRLFx2 + self.content
-
-    def to_binary(self):
-        pass
+        headers = [status_line]
+        for k, v in self.headers.items():
+            header = f"{k}: {v}".encode() + b'\r\n'
+            headers.append(header)
+        headers_together = b''
+        for h in headers:
+            headers_together += h
+        return headers_together + b'\r\n' + self.content
 
 
 class Request:
@@ -106,10 +170,8 @@ class Worker:
             bytes_recd = 0
             while bytes_recd < MAX_MSG_LEN:
                 try:
-                    ic('Waiting for new request')
                     buff = conn.recv(MSG_LEN)
-                    print(buff)
-                    ic(len(buff))
+                    print(buff) # TODO
                     if not buff: break  # if client closed socket
                     chunks.append(buff)
                     bytes_recd = bytes_recd + len(buff)
@@ -118,7 +180,6 @@ class Worker:
                     logging.exception('Timeout error. Closing the connection...')
                     break
             raw_req = b''.join(chunks)
-            ic(raw_req)
             request = Request(raw_req)
             response = RequestHandler.get_response(request, _dir)
             conn.sendall(response)
@@ -149,8 +210,8 @@ class Server:
         while True:
             try:
                 conn, addr = self.socket.accept()
-                conn.settimeout(10) # TODO ADD TO CONSTS
-                with ThreadPoolExecutor(max_workers=5) as executor: # TODO max_workers
+                conn.settimeout(TIMEOUT)
+                with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                     executor.submit(Worker(), conn, self.root_directory)
             except Exception as e:
                 logging.info("Error during handling request. Details: %s" % e)
@@ -179,4 +240,4 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         logging.info("Server has been stopped by admin")
     except Exception as e:
-        logging.error("Server has been crashed %s" % e) # TODO add msg
+        logging.error("Server has been crashed %s" % e)
