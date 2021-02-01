@@ -21,7 +21,7 @@ When `-i` flag is used, the server tries to create an `index.html' file after GE
 
 `$ ab -n 50000 -c 100 -r http://localhost:4000/`
 
-`This is ApacheBench, Version 2.3 <$Revision: 1843412 $>
+<pre>This is ApacheBench, Version 2.3 <$Revision: 1843412 $>
 Copyright 1996 Adam Twiss, Zeus Technology Ltd, http://www.zeustech.net/
 Licensed to The Apache Software Foundation, http://www.apache.org/
 
@@ -73,4 +73,5 @@ Percentage of the requests served within a certain time (ms)
   95%     62
   98%     64
   99%     66
- 100%     80 (longest request)`
+ 100%     80 (longest request)</pre>
+
