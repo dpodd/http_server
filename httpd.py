@@ -6,26 +6,71 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 
 CRLFx2 = b'\r\n\r\n'
+MAX_MSG_LEN = 2048
+MSG_LEN = 1024
+OK = 200
+Forbidden = 403
+NotFound = 404
+NotAllowed = 405
+phrases = {
+    OK: 'OK',
+    Forbidden: 'Forbidden',
+    NotFound: 'Not Found',
+    NotAllowed: 'Not Allowed',
+}
 
 
 class RequestHandler:
     @classmethod
     def get_response(cls, request, _dir):
         response = cls(request, _dir)
-        response.process_request()
-        return response.to_binary() # TODO ??? Refactor?
+        resp = response.process_request()
+        return resp
 
     def __init__(self, request, _dir):
         self.request = request
         self.dir = _dir
+        self.content = None
 
     def process_request(self):
-        # 1 process resourse
         path_to_file = self.get_path(self.request.path)
-        # 2 process METHOD GET/HEAD
+        if self.request.method == 'GET':
+            self.content, code = self.get_content(path_to_file)
+            response = self.build_response(code)
+        elif self.request.method == 'HEAD':
+            self.content = b''
+            response = self.build_response(OK)
+        else:
+            self.content = b''
+            response = self.build_response(NotAllowed)
+
+        return response
 
     def get_path(self, path):
+        if path == '/':
+            return os.path.join(os.path.abspath('.'), self.dir, 'index.html')
+        return os.path.join(os.path.abspath('.'), self.dir, path)
 
+    @staticmethod
+    def get_content(path_to_file):
+        try:
+            with open(path_to_file, 'rb') as file:
+                content = file.read()
+                return content, OK
+        except Exception as e: # TODO add exceptions to 403, 404 error
+            ic("Error: ", e)
+            return b'', NotFound
+
+    def set_headers(self):
+
+
+    def build_response(self, code):
+        status_line = f"HTTP/1.0 {code} {phrases[code]}"
+        status_line = status_line.encode() + b'\r\n'
+        content_length_header = 'Content-Length: ' + '%s' % len(self.content)
+        content_length_header = content_length_header.encode()
+
+        return status_line + content_length_header + CRLFx2 + self.content
 
     def to_binary(self):
         pass
@@ -54,37 +99,29 @@ class Worker:
     def __call__(self, conn, _dir):
         self.process(conn, _dir)
 
-    def process(self, conn, _dir):
+    @staticmethod
+    def process(conn, _dir):
         with conn:
-            while True:
+            chunks = []
+            bytes_recd = 0
+            while bytes_recd < MAX_MSG_LEN:
                 try:
                     ic('Waiting for new request')
-                    buff = conn.recv(1024) # TODO move to consts
+                    buff = conn.recv(MSG_LEN)
                     print(buff)
+                    ic(len(buff))
                     if not buff: break  # if client closed socket
-                    if CRLFx2 not in buff:
-                        # send 500 invalid request?  # TODO refactor this code, make standard implementation
-                        raise NotImplementedError("Unsupported request: no CRLF delimiter")
-
-                    pos = buff.find(CRLFx2) + len(CRLFx2) # TODO Remove?
-                    raw_req = buff[:pos]  # server throws out the body of the request if it exists
-
-                    request = Request(raw_req)
-                    ic(request.headers)
-                    ic(request.method)
-                    # try:
-                    #     response = RequestHandler.get_response(request, _dir)
-                    # except:
-                    #     pass
-
-                    # conn.sendall(response)
-
-                except NotImplementedError as e:
-                    logging.exception(f"An error occurred; the message is: {e}")
-                    break
+                    chunks.append(buff)
+                    bytes_recd = bytes_recd + len(buff)
+                    if CRLFx2 in buff: break
                 except socket.timeout:
-                    logging.exception('Timeout error. Closing the socket...')
+                    logging.exception('Timeout error. Closing the connection...')
                     break
+            raw_req = b''.join(chunks)
+            ic(raw_req)
+            request = Request(raw_req)
+            response = RequestHandler.get_response(request, _dir)
+            conn.sendall(response)
 
 
 class Server:
