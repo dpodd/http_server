@@ -82,7 +82,7 @@ class RequestHandler:
         return path
 
     def get_path(self, path):
-        if path.startswith('/'):
+        if path.startswith('/') or path.startswith('\\'):  # not tested on Windows, but anyway
             path = path[1:]
         path_to_resource = os.path.join(os.path.abspath(self.dir), path)
         if os.path.isdir(path_to_resource):
