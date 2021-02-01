@@ -65,14 +65,12 @@ class RequestHandler:
             if self.create_index:
                 create_index_page_if_not_exist(path_to_file)
             self.content, self.code, self.content_length = self.get_content(path_to_file, open_file=True)
-            response = self.build_response()
         elif self.request.method == 'HEAD':
             self.content, self.code, self.content_length = self.get_content(path_to_file, open_file=False)
-            response = self.build_response()
         else:
             self.content = b''
             self.code = NotAllowed
-            response = self.build_response()
+        response = self.build_response()
         return response
 
     def parse_query_string(self, path):
@@ -95,13 +93,12 @@ class RequestHandler:
                 if open_file:
                     content = file.read()
                     content_length = len(content)
-                    self.set_content_type(path_to_file)
                 else:
                     line = file.readline()
                     content = b''
                     content_length = os.path.getsize(path_to_file)
-                    self.set_content_type(path_to_file)
-                return content, OK, content_length
+            self.set_content_type(path_to_file)
+            return content, OK, content_length
         except IOError as e:
             if e.errno == errno.ENOENT:
                 return b'', NotFound, None
