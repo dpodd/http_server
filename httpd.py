@@ -3,7 +3,6 @@ import os
 import errno
 from optparse import OptionParser
 from urllib.parse import unquote
-from icecream import ic # TODO remove
 from wsgiref.handlers import format_date_time
 from datetime import datetime
 from time import mktime
@@ -38,29 +37,33 @@ class RequestHandler:
         "gif": "image/gif",
         "css": "text/css",
         "html": "text/html",
+        "txt": "text/plain",
         "js": "application/javascript",
         "swf": "application/x-shockwave-flash",
     }
 
     @classmethod
-    def get_response(cls, request, _dir):
-        response = cls(request, _dir)
+    def get_response(cls, request, _dir, create_index):
+        response = cls(request, _dir, create_index)
         response_binary = response.process_request()
         return response_binary
 
-    def __init__(self, request, _dir):
+    def __init__(self, request, _dir, create_index):
         self.request = request
         self.dir = _dir
+        self.create_index = create_index
         self.content = None
         self.code = None
         self.content_length = None
         self.content_type = None
+        self.query = None
         self.headers = {}
 
     def process_request(self):
-        path_to_file = unquote(self.get_path(self.request.path))
+        path_to_file = unquote(self.get_path(self.parse_query_string(self.request.path)))
         if self.request.method == 'GET':
-            create_index_page_if_not_exist(path_to_file)
+            if self.create_index:
+                create_index_page_if_not_exist(path_to_file)
             self.content, self.code, self.content_length = self.get_content(path_to_file, open_file=True)
             response = self.build_response()
         elif self.request.method == 'HEAD':
@@ -72,10 +75,16 @@ class RequestHandler:
             response = self.build_response()
         return response
 
+    def parse_query_string(self, path):
+        if path.find('?') != -1:
+            self.query = path[path.find('?')+1:]
+            return path[:path.find('?')]
+        return path
+
     def get_path(self, path):
         if path.startswith('/'):
             path = path[1:]
-        path_to_resource = os.path.join(os.path.abspath('.'), self.dir, path)
+        path_to_resource = os.path.join(os.path.abspath(self.dir), path)
         if os.path.isdir(path_to_resource):
             return os.path.join(path_to_resource, 'index.html')
         return os.path.join(path_to_resource)
@@ -160,18 +169,18 @@ class Request:
 
 
 class Worker:
-    def __call__(self, conn, _dir):
-        self.process(conn, _dir)
+    def __call__(self, conn, _dir, create_index):
+        self.process(conn, _dir, create_index)
 
     @staticmethod
-    def process(conn, _dir):
+    def process(conn, _dir, create_index):
         with conn:
             chunks = []
             bytes_recd = 0
             while bytes_recd < MAX_MSG_LEN:
                 try:
                     buff = conn.recv(MSG_LEN)
-                    print(buff) # TODO
+                    # print(buff)
                     if not buff: break  # if client closed socket
                     chunks.append(buff)
                     bytes_recd = bytes_recd + len(buff)
@@ -181,24 +190,30 @@ class Worker:
                     break
             raw_req = b''.join(chunks)
             request = Request(raw_req)
-            response = RequestHandler.get_response(request, _dir)
+            response = RequestHandler.get_response(request, _dir, create_index)
             conn.sendall(response)
 
 
 class Server:
-    def __init__(self, host, port, max_workers, root_directory):
+    def __init__(self, host, port, max_workers, root_directory, create_index):
         self.socket = None
         self.host = host
         self.port = port
         self.max_workers = max_workers
         self.root_directory = root_directory
+        self.create_index = create_index
         self._check_root_dir()
 
     def _check_root_dir(self):
-        _dir = os.path.abspath('.')
-        _dir = os.path.join(_dir, self.root_directory)
-        if not os.path.exists(_dir):
-            raise NotADirectoryError(f"Path not found: {_dir}")
+        """ Check if root directory for server exists """
+        if os.path.isabs(self.root_directory):
+            if not os.path.exists(self.root_directory):
+                raise NotADirectoryError(f"Path not found: {self.root_directory}")
+        else:
+            _dir = os.path.abspath('.')
+            _dir = os.path.join(_dir, self.root_directory)
+            if not os.path.exists(_dir):
+                raise NotADirectoryError(f"Path not found: {_dir}")
 
     def start(self):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -212,25 +227,26 @@ class Server:
                 conn, addr = self.socket.accept()
                 conn.settimeout(TIMEOUT)
                 with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                    executor.submit(Worker(), conn, self.root_directory)
+                    executor.submit(Worker(), conn, self.root_directory, self.create_index)
             except Exception as e:
                 logging.info("Error during handling request. Details: %s" % e)
-            break  # TODO : delete after debug
 
 
 if __name__ == '__main__':
     op = OptionParser()
-    op.add_option("-p", "--port", action="store", type=int, default=40000)
+    op.add_option("-p", "--port", action="store", type=int, default=80)
     op.add_option("--host", action="store", type=str, default='localhost')
     op.add_option("-w", "--workers", action="store", type=int, default=5)
-    op.add_option("-r", "--root_dir", action="store", type=str, default='/') # TODO turn to Arg? HARDCODED!
+    op.add_option("-i", "--create_index", action="store_true", default=False, help="create index.html "
+                                                                    "in subdirectories automatically")
+    op.add_option("-r", "--root_dir", action="store", type=str, default='files')
     opts, args = op.parse_args()
 
     logging.basicConfig(level=logging.INFO)
     logging.info(f"Server is running on host '{opts.host}' and port {opts.port}")
 
     try:
-        server = Server(opts.host, opts.port, opts.workers, opts.root_dir)
+        server = Server(opts.host, opts.port, opts.workers, opts.root_dir, opts.create_index)
     except NotADirectoryError as e:
         logging.error("Cannot start server: %s" % e)
         raise
