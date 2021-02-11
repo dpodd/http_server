@@ -8,11 +8,13 @@ from datetime import datetime
 from time import mktime
 from concurrent.futures import ThreadPoolExecutor
 import logging
+import mimetypes
+
 from htmlgen import create_index_page_if_not_exist
 
 CRLFx2 = b'\r\n\r\n'
 MAX_MSG_LEN = 2048
-MSG_LEN = 1024
+MSG_LEN = 124
 TIMEOUT = 10
 OK = 200
 Forbidden = 403
@@ -30,24 +32,6 @@ SERVER_NAME = 'Server-X'
 
 
 class RequestHandler:
-    content_types = {
-        "jpg": "image/jpeg",
-        "jpeg": "image/jpeg",
-        "png": "image/png",
-        "gif": "image/gif",
-        "css": "text/css",
-        "html": "text/html",
-        "txt": "text/plain",
-        "js": "application/javascript",
-        "swf": "application/x-shockwave-flash",
-    }
-
-    @classmethod
-    def get_response(cls, request, _dir, create_index):
-        response = cls(request, _dir, create_index)
-        response_binary = response.process_request()
-        return response_binary
-
     def __init__(self, request, _dir, create_index):
         self.request = request
         self.dir = _dir
@@ -58,6 +42,10 @@ class RequestHandler:
         self.content_type = None
         self.query = None
         self.headers = {}
+
+    def get_response(self):
+        response_binary = self.process_request()
+        return response_binary
 
     def process_request(self):
         path_to_file = unquote(self.get_path(self.parse_query_string(self.request.path)))
@@ -109,10 +97,8 @@ class RequestHandler:
             return b'', InternalServerError, None
 
     def set_content_type(self, path_to_file):
-        _, ext = os.path.splitext(path_to_file)
-        ext = ext[1:]  # remove dot
-        if ext in self.content_types.keys():
-            self.content_type = self.content_types.get(ext)
+        _, filename = os.path.split(path_to_file)
+        self.content_type = mimetypes.guess_type(filename)[0]
 
     def set_headers(self):
         now = datetime.now()
@@ -165,30 +151,26 @@ class Request:
         return self.lines[0].split()[1]
 
 
-class Worker:
-    def __call__(self, conn, _dir, create_index):
-        self.process(conn, _dir, create_index)
-
-    @staticmethod
-    def process(conn, _dir, create_index):
-        with conn:
-            chunks = []
-            bytes_recd = 0
-            while bytes_recd < MAX_MSG_LEN:
-                try:
-                    buff = conn.recv(MSG_LEN)
-                    # print(buff)
-                    if not buff: break  # if client closed socket
-                    chunks.append(buff)
-                    bytes_recd = bytes_recd + len(buff)
-                    if CRLFx2 in buff: break
-                except socket.timeout:
-                    logging.exception('Timeout error. Closing the connection...')
+def work(conn, _dir, create_index):
+    with conn:
+        raw_req = b''
+        bytes_recd = 0
+        while bytes_recd < MAX_MSG_LEN:
+            try:
+                buff = conn.recv(MSG_LEN)
+                if not buff:  # if client closed socket
                     break
-            raw_req = b''.join(chunks)
-            request = Request(raw_req)
-            response = RequestHandler.get_response(request, _dir, create_index)
-            conn.sendall(response)
+                bytes_recd += len(buff)
+                raw_req += buff
+                if CRLFx2 in raw_req:
+                    break
+            except socket.timeout:
+                logging.exception('Timeout error. Closing the connection...')
+                break
+
+        request = Request(raw_req)
+        response = RequestHandler(request, _dir, create_index).get_response()
+        conn.sendall(response)
 
 
 class Server:
@@ -199,7 +181,6 @@ class Server:
         self.max_workers = max_workers
         self.root_directory = root_directory
         self.create_index = create_index
-        self._check_root_dir()
 
     def _check_root_dir(self):
         """ Check if root directory for server exists """
@@ -213,6 +194,7 @@ class Server:
                 raise NotADirectoryError(f"Path not found: {_dir}")
 
     def start(self):
+        self._check_root_dir()
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind((self.host, self.port))
@@ -224,7 +206,7 @@ class Server:
                 conn, addr = self.socket.accept()
                 conn.settimeout(TIMEOUT)
                 with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                    executor.submit(Worker(), conn, self.root_directory, self.create_index)
+                    executor.submit(work, conn, self.root_directory, self.create_index)
             except Exception as e:
                 logging.info("Error during handling request. Details: %s" % e)
 
@@ -242,14 +224,12 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     logging.info(f"Server is running on host '{opts.host}' and port {opts.port}")
 
-    try:
-        server = Server(opts.host, opts.port, opts.workers, opts.root_dir, opts.create_index)
-    except NotADirectoryError as e:
-        logging.error("Cannot start server: %s" % e)
-        raise
+    server = Server(opts.host, opts.port, opts.workers, opts.root_dir, opts.create_index)
 
     try:
         server.start()
+    except NotADirectoryError as e:
+        logging.error("Cannot start server: %s" % e)
     except KeyboardInterrupt:
         logging.info("Server has been stopped by admin")
     except Exception as e:
