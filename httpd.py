@@ -78,13 +78,10 @@ class RequestHandler:
     def get_content(self, path_to_file, open_file=False):
         try:
             with open(path_to_file, 'rb') as file:
+                content = b''
+                content_length = os.path.getsize(path_to_file)
                 if open_file:
                     content = file.read()
-                    content_length = len(content)
-                else:
-                    line = file.readline()
-                    content = b''
-                    content_length = os.path.getsize(path_to_file)
             self.set_content_type(path_to_file)
             return content, OK, content_length
         except IOError as e:
