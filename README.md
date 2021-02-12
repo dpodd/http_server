@@ -2,7 +2,7 @@
 ### Homework #4 for 'OTUS Python Professional' Course
 
 #### Description
-A study project of an HTTP server for getting practical knowledge of concurrency and socket programming. The concurrency was implemented through multithreading, using high-level `concurrent.futures` Python module. Sockets are short-lived and close after response is send. The server can return HTTP responses with the contents of its root directory, which is provided as a command line option.
+A study project of an HTTP server for getting practical knowledge of concurrency and socket programming. The concurrency was implemented through multithreading, using high-level `concurrent.futures` Python module. Sockets are short-lived and close after the response is sent. The server can return HTTP responses with the contents of its root directory, which is provided as a command line option.
 
 The detailed requirements for the task with tests are available at https://github.com/s-stupnikov/http-test-suite
 
@@ -13,7 +13,7 @@ To start a server from a command line:
 
 The root dir with serving files may be an absolute (if started with '/') or relative path. In latter case the full path is formed around the current working directory. 
 
-When `-i` flag is used, the server tries to create an `index.html' file after GET request to a subdirectory if it doesn't exist there yet. This file will contain a list of files in a given subdirectory. If this behaviour is undesirable, omit this flag.
+When `-i` flag is used, the server tries to create an `index.html` file after GET request to a subdirectory if it doesn't exist there yet. This file will contain a list of files in a given subdirectory. If this behaviour is undesirable, omit this flag.
 
 `$ python httpd.py -p 4000 -r files -i `
 
